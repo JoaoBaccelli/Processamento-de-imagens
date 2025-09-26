@@ -1,17 +1,71 @@
-//   gcc -std=c99 -O2 -Wall -Wextra -o main main.c `pkg-config --cflags --libs sdl3` -lSDL3_image -lm
-// Run:
+// Compilação:
+//   gcc -std=c99 -O2 -Wall -Wextra -o main.exe main.c $(pkg-config --cflags --libs sdl3 sdl3-image sdl3-ttf) -lm
+//
+// Execução:
 //   ./main caminho/para/imagem.png
 
 #include <stdio.h>
-#include <stdint.h> 
+#include <stdint.h> // Usada para tipos inteiros de tamanho fixo
 #include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <stdbool.h>
-#include <errno.h>          
+#include <string.h> // Usada para manipulação de strings e memória
+#include <math.h> // Usada para funções matemáticas
+#include <stdbool.h> // Usada para dados booleanos
+#include <errno.h> // Usada para tratamento de erros através da variável global errno e mensagens de erro
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
 #include <SDL3_ttf/SDL_ttf.h>
+
+static TTF_Font* open_ui_font(int pt) {
+    char local1[1024] = {0};
+    const char *base = SDL_GetBasePath();
+    if (base) {
+        SDL_snprintf(local1, sizeof(local1), "%sDejaVuSans.ttf", base);
+    } else {
+        SDL_strlcpy(local1, "DejaVuSans.ttf", sizeof(local1));
+    }
+    const char* local_candidates[] = { local1, "DejaVuSans.ttf", "fonts/DejaVuSans.ttf", NULL };
+
+#if defined(_WIN32)
+    const char* os_candidates[] = {
+        ".\\DejaVuSans.ttf",
+        ".\\fonts\\DejaVuSans.ttf",
+        "C:\\\\Windows\\\\Fonts\\\\arial.ttf",
+        "C:\\\\Windows\\\\Fonts\\\\segoeui.ttf",
+        "C:\\\\Windows\\\\Fonts\\\\tahoma.ttf",
+        NULL
+    };
+#elif defined(__linux__)
+    const char* os_candidates[] = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+        NULL
+    };
+#elif defined(__APPLE__)
+    const char* os_candidates[] = {
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        NULL
+    };
+#else
+    const char* os_candidates[] = { NULL };
+#endif
+
+    for (int i = 0; local_candidates[i]; ++i) {
+        SDL_Log("Tentando fonte local: %s", local_candidates[i]);
+        TTF_Font* f = TTF_OpenFont(local_candidates[i], pt);
+        if (f) return f;
+        SDL_Log("Falhou: %s", SDL_GetError());
+    }
+    for (int i = 0; os_candidates[i]; ++i) {
+        SDL_Log("Tentando fonte do SO: %s", os_candidates[i]);
+        TTF_Font* f = TTF_OpenFont(os_candidates[i], pt);
+        if (f) return f;
+        SDL_Log("Falhou: %s", SDL_GetError());
+    }
+    return NULL;
+}
 
 // Função para posicionar a janela 'win_side' ao lado da 'win_main'
 static void place_side_window(SDL_Window *win_main, SDL_Window *win_side, int side_w, int side_h) {
@@ -41,8 +95,7 @@ static void place_side_window(SDL_Window *win_main, SDL_Window *win_side, int si
 }
 
 
-// === [H] Histograma + estatísticas ===
-// Calcula histograma (256 níveis), média e desvio-padrão da imagem em RGBA32 (assumida cinza)
+// Gera o histograma e conta o total de pixels
 static void calcular_histograma(SDL_Surface* img, uint32_t hist[256], uint64_t* total_pixels) {
     memset(hist, 0, 256 * sizeof(uint32_t));
     *total_pixels = 0;
@@ -63,6 +116,7 @@ static void calcular_histograma(SDL_Surface* img, uint32_t hist[256], uint64_t* 
     }
 }
 
+// Calcula média e desvio padrão do histograma
 static void estatisticas_do_histograma(const uint32_t hist[256], uint64_t total,
                                        double* media, double* desvio) {
     if (total == 0) { *media = 0.0; *desvio = 0.0; return; }
@@ -79,12 +133,14 @@ static void estatisticas_do_histograma(const uint32_t hist[256], uint64_t total,
     *desvio = sqrt(var);
 }
 
+// Descrição da media da imagem baseado no histograma
 static const char* class_luminosidade(double media) {
     if (media < 85.0) return "escura";
     if (media < 170.0) return "media";
     return "clara";
 }
 
+// Descrição do desvio da imagem baseado no histograma
 static const char* class_contraste(double desvio) {
     if (desvio > 60.0) return "alto";
     if (desvio > 30.0) return "medio";
@@ -117,7 +173,7 @@ static void render_histograma(SDL_Renderer* r, SDL_FRect area, const uint32_t hi
 
 static TTF_Font* g_ui_font = NULL;
 
-// Desenha um botão simples; retorna 1 se o mouse está sobre ele
+// Desenha um botão e retorna 1 para mudar de cor caso o mouse esteja sobre ele
 static int render_botao(SDL_Renderer* r, SDL_FRect rect, int hovered, int pressed, const char* rotulo_curto) {
     if (pressed) SDL_SetRenderDrawColor(r, 30, 70, 150, 255);
     else if (hovered) SDL_SetRenderDrawColor(r, 60, 120, 220, 255);
@@ -128,7 +184,7 @@ static int render_botao(SDL_Renderer* r, SDL_FRect rect, int hovered, int presse
     SDL_SetRenderDrawColor(r, 15, 35, 70, 255);
     SDL_RenderRect(r, &rect);
 
-    // marca central (no lugar de texto, sem SDL_ttf)
+    //Desenha o botão, define a cor e calcula o centro
     SDL_SetRenderDrawColor(r, 230, 230, 240, 255);
     float cx = rect.x + rect.w * 0.5f;
     float cy = rect.y + rect.h * 0.5f;
@@ -138,6 +194,7 @@ static int render_botao(SDL_Renderer* r, SDL_FRect rect, int hovered, int presse
         if (surf) {
             SDL_Texture* tex = SDL_CreateTextureFromSurface(r, surf);
             if (tex) {
+                SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
                 SDL_FRect dst = {
                     rect.x + (rect.w - (float)surf->w) * 0.5f,
                     rect.y + (rect.h - (float)surf->h) * 0.5f,
@@ -157,7 +214,7 @@ static int render_botao(SDL_Renderer* r, SDL_FRect rect, int hovered, int presse
     return hovered;
 }
 
-// Retorna 1 se estiver em escala de cinza / 0 se não; -1 para erro/formatos diferentes
+// Retorna 1 se estiver em escala de cinza e 0 se não
 int verifica_se_imagem_e_cinza(SDL_Surface* img) {
     if (!img) return -1;
     if (img->format != SDL_PIXELFORMAT_RGBA32) return -1;
@@ -179,6 +236,7 @@ int verifica_se_imagem_e_cinza(SDL_Surface* img) {
     return 1;
 }
 
+// Quando a imagem não é cinza, aplica tons de cinza nela
 int aplicar_escala_de_cinza(SDL_Surface* img) {
     if (!img) return -1;
     if (img->format != SDL_PIXELFORMAT_RGBA32) return -1;
@@ -192,13 +250,14 @@ int aplicar_escala_de_cinza(SDL_Surface* img) {
         for (int x = 0; x < w; x++) {
             uint8_t* p = row + x * 4;
             uint8_t R = p[0], G = p[1], B = p[2];
-            uint8_t Y = (uint8_t)(0.2125 * R + 0.7154 * G + 0.0721 * B);
-            p[0] = Y; p[1] = Y; p[2] = Y;
+            uint8_t Y = (uint8_t)(0.2125 * R + 0.7154 * G + 0.0721 * B); // fórmula usada a partir do PDF
+            p[0] = Y; p[1] = Y; p[2] = Y; // todos os pixels com a mesma intensidade para a escala de cinza
         }
     }
     return 0;
 }
 
+// Structs para armazenar as intensidades e pixels de cada intensidade para a equalização
 typedef struct { uint8_t antigo, novo; } ParIntensidade;
 typedef struct { uint8_t intensidade; uint32_t quantidade; } ContagemIntensidade;
 
@@ -208,6 +267,7 @@ static int comparar_por_intensidade(const void* a, const void* b) {
     return (int)A->intensidade - (int)B->intensidade;
 }
 
+// Mapeia a intensidades de pixels baseado na distribuição cumulativa da imagem RGBA32
 size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** saidaPares) {
     if (!imagem || !saidaPares) return 0;
     if (imagem->format != SDL_PIXELFORMAT_RGBA32) { *saidaPares = NULL; return 0; }
@@ -223,7 +283,7 @@ size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** 
         uint8_t* row = base + y * pitch;
         for (int x = 0; x < w; x++) {
             uint8_t* px = row + x * 4;
-            uint8_t intensidade = px[0]; // supomos já cinza
+            uint8_t intensidade = px[0];
 
             size_t i;
             for (i = 0; i < quantidadeIntensidades; i++) {
@@ -280,6 +340,7 @@ size_t criar_matriz_mapeamento_por_imagem(SDL_Surface* imagem, ParIntensidade** 
     return quantidadeIntensidades;
 }
 
+// Equaliza tons de cinza por mapeamento usando os Structs
 int equalizar_com_matriz_linear(SDL_Surface* src, SDL_Surface* dst,
                                 const ParIntensidade* pares, size_t n) {
     if (!src || !dst || (!pares && n > 0)) return -1;
@@ -309,6 +370,8 @@ int equalizar_com_matriz_linear(SDL_Surface* src, SDL_Surface* dst,
     return 0;
 }
 
+//-------------------------------------------------------------------------------------------------------------------------
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printf("Erro! É preciso passar a imagem ao executar!\n");
@@ -322,7 +385,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ---------- CARREGAMENTO COM TRATAMENTO DE ERROS (ADICIONADO) ----------
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_DEBUG);
+
     FILE *f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "Erro: não foi possível abrir '%s' (%s)\n", path, strerror(errno));
@@ -356,7 +420,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // --- Passo 1: garantir cinza (se não estiver) ---
+    //garantir cinza na imagem
     if (!SDL_LockSurface(img)) {
         printf("Erro ao travar surface para escala de cinza: %s\n", SDL_GetError());
         SDL_DestroySurface(img);
@@ -371,10 +435,9 @@ int main(int argc, char* argv[]) {
     int w = img->w, h = img->h;
     SDL_UnlockSurface(img);
 
-    // Cria matriz antigo/novo somente com intensidades presentes (X linhas)
+    //Cria matriz somente com intensidades presentes
     ParIntensidade* matriz = NULL;
     size_t linhas = criar_matriz_mapeamento_por_imagem(img, &matriz);
-    SDL_UnlockSurface(img);
 
     if (linhas == 0 || !matriz) {
         printf("Erro: não foi possível criar a matriz de mapeamento.\n");
@@ -398,14 +461,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Aplica equalização usando SOMENTE a matriz (sem LUT de 256)
     (void)equalizar_com_matriz_linear(img, eq, matriz, linhas);
 
     SDL_UnlockSurface(eq);
     SDL_UnlockSurface(img);
 
     {
-        // 1) Janela principal (mostra imagem)
+        //Janela principal
         SDL_Window* win_main = SDL_CreateWindow("Proj1 - Principal (Imagem)",
                                                 w, h, SDL_WINDOW_RESIZABLE);
         if (!win_main) {
@@ -452,9 +514,15 @@ int main(int argc, char* argv[]) {
             free(matriz); SDL_DestroySurface(eq); SDL_DestroySurface(img); SDL_Quit(); return 1;
         }
 
-        if (TTF_Init()) {
-            g_ui_font = TTF_OpenFont("DejaVuSans.ttf", 18);
-            if (!g_ui_font) g_ui_font = TTF_OpenFont("C:\\Windows\\Fonts\\arial.ttf", 18);
+        if (!TTF_Init()) {
+            fprintf(stderr, "Erro ao inicializar SDL_ttf: %s\n", SDL_GetError());
+        } else {
+            g_ui_font = open_ui_font(18);
+            if (!g_ui_font) {
+                fprintf(stderr, "Aviso: nenhuma fonte TTF encontrada. Coloque 'DejaVuSans.ttf' ao lado do executável.\n");
+            } else {
+                SDL_Log("Fonte carregada com sucesso.");
+            }
         }
 
         // Estado do botão e histograma
@@ -497,7 +565,7 @@ int main(int argc, char* argv[]) {
                     } else if (e.key.scancode == SDL_SCANCODE_S) {
                         // Salva diretamente a imagem em memória (sem passar pelo renderer)
                         SDL_Surface* atual = equalizado_on ? eq : img;
-                        if (IMG_SavePNG(atual, "output_image.png") != 0) {
+                        if (IMG_SavePNG(atual, "output_image.png")) {
                             SDL_Log("Imagem salva como 'output_image.png'");
                         } else {
                             SDL_Log("Falha ao salvar 'output_image.png': %s", SDL_GetError());
@@ -570,6 +638,7 @@ int main(int argc, char* argv[]) {
                 if (s1) {
                     SDL_Texture* t1 = SDL_CreateTextureFromSurface(ren_sec, s1);
                     if (t1) {
+                        SDL_SetTextureBlendMode(t1, SDL_BLENDMODE_BLEND);
                         SDL_FRect d1 = { area_hist.x, area_hist.y + area_hist.h + 8, (float)s1->w, (float)s1->h };
                         SDL_RenderTexture(ren_sec, t1, NULL, &d1);
                         SDL_DestroyTexture(t1);
@@ -581,6 +650,7 @@ int main(int argc, char* argv[]) {
                 if (s2) {
                     SDL_Texture* t2 = SDL_CreateTextureFromSurface(ren_sec, s2);
                     if (t2) {
+                        SDL_SetTextureBlendMode(t2, SDL_BLENDMODE_BLEND);
                         SDL_FRect d2 = { area_hist.x, area_hist.y + area_hist.h + 8 + 22, (float)s2->w, (float)s2->h };
                         SDL_RenderTexture(ren_sec, t2, NULL, &d2);
                         SDL_DestroyTexture(t2);
@@ -593,7 +663,7 @@ int main(int argc, char* argv[]) {
 
             SDL_RenderPresent(ren_sec);
 
-            SDL_Delay(16); 
+            SDL_Delay(16); // ~60 FPS
         }
 
         // Limpeza
